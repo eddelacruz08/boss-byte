@@ -1,0 +1,6 @@
+# Prettier reads the ignore file of the directory it is run from, so this mirrors the
+# root .prettierignore for `prettier --check .` inside apps/core.
+dist
+coverage
+.turbo
+src/routeTree.gen.ts

@@ -1,0 +1,75 @@
+{
+  "name": "bossbyte",
+  "version": "0.1.0",
+  "private": true,
+  "description": "BossByte — a full-stack TypeScript monorepo boilerplate (Express 5 API, React 19 dashboard, shared UI and schema packages).",
+  "license": "UNLICENSED",
+  "type": "module",
+  "packageManager": "npm@11.20.0",
+  "engines": {
+    "node": ">=26.0.0"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "dev": "turbo run dev dev:worker",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "test:integration": "npm run test:integration --workspace @bossbyte/api",
+    "test:e2e": "playwright test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "knip": "knip",
+    "licenses": "node scripts/check-licenses.mjs",
+    "version:stamp": "node scripts/stamp-version.mjs",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "db:migrate": "npm run db:migrate --workspace @bossbyte/api",
+    "db:seed": "npm run db:seed --workspace @bossbyte/api",
+    "docs:dev": "npm run dev --workspace @bossbyte/docs",
+    "clean": "turbo run clean && rm -rf node_modules .turbo"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.65.1",
+    "@types/node": "^26.6.6",
+    "eslint": "^10.15.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.8",
+    "globals": "^17.14.0",
+    "knip": "^6.48.0",
+    "license-checker-rseidelsohn": "^5.0.1",
+    "prettier": "^3.10.1",
+    "turbo": "^2.11.13",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.73.0"
+  },
+  "overrides": {
+    "@grpc/grpc-js": "^1.14.7",
+    "archiver@^8": {
+      "readdir-glob": "^4.0.0"
+    },
+    "bull": {
+      "uuid": "^11.1.1"
+    },
+    "exceljs": {
+      "uuid": "^11.1.1"
+    }
+  },
+  "allowScripts": {
+    "bcrypt": true,
+    "esbuild": true,
+    "@scarf/scarf": false,
+    "core-js": false,
+    "protobufjs": false,
+    "@firebase/util": false,
+    "msgpackr-extract": false,
+    "fsevents": false
+  }
+}

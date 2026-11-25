@@ -1,0 +1,16 @@
+{
+  "name": "@bossbyte/docs",
+  "version": "0.1.0",
+  "private": true,
+  "description": "BossByte documentation website (VitePress).",
+  "type": "module",
+  "scripts": {
+    "dev": "vitepress dev --port 5174",
+    "build": "vitepress build",
+    "preview": "vitepress preview --port 5174",
+    "clean": "rm -rf .vitepress/dist .vitepress/cache .turbo"
+  },
+  "devDependencies": {
+    "vitepress": "^1.6.4"
+  }
+}

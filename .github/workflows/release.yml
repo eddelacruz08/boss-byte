@@ -1,0 +1,82 @@
+name: Release
+
+# Run manually from the Actions tab, on `main`:
+#
+#   1. stamps the new version into every package.json and package-lock.json
+#   2. commits it as "chore(release): vX.Y.Z" and tags the commit vX.Y.Z
+#   3. publishes a GitHub release whose notes are generated from the pull
+#      requests merged since the previous tag (grouped by .github/release.yml)
+#
+# If `main` is protected, the default token cannot push the release commit.
+# Add a secret named RELEASE_TOKEN — a fine-grained personal access token or
+# GitHub App token with "Contents: read and write" that is allowed to bypass
+# the protection. Pushing with it also lets CI run on the release commit,
+# which pushes made with the default token never trigger.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'New version: an exact one (1.4.0, 2.0.0-rc.1) or major | minor | patch'
+        required: true
+        default: patch
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Stamp, tag and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Releases are cut from main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Run this workflow on main, not ${GITHUB_REF_NAME}."
+          exit 1
+
+      - uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+
+      - name: Stamp the version
+        id: stamp
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: node scripts/stamp-version.mjs "$REQUESTED_VERSION"
+
+      - name: Commit, tag and push
+        env:
+          VERSION: ${{ steps.stamp.outputs.version }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin "refs/tags/v${VERSION}" > /dev/null; then
+            echo "::error::Tag v${VERSION} already exists."
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --all --message "chore(release): v${VERSION}"
+          git tag --annotate "v${VERSION}" --message "v${VERSION}"
+          # --atomic: the commit and the tag land together or not at all.
+          git push --atomic origin HEAD:main "v${VERSION}"
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.stamp.outputs.version }}
+        run: |
+          set -euo pipefail
+          flags=(--title "v${VERSION}" --generate-notes --verify-tag)
+          # 2.0.0-rc.1 and friends are published as pre-releases.
+          if [[ "$VERSION" == *-* ]]; then flags+=(--prerelease); fi
+          gh release create "v${VERSION}" "${flags[@]}"

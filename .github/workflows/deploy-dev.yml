@@ -1,0 +1,276 @@
+name: Deploy (dev)
+
+# Builds the API and dashboard images, applies database migrations, then
+# deploys three Cloud Run services:
+#
+#   bossbyte-core-dev     public    Nginx: serves the dashboard, proxies /api to the API
+#   bossbyte-api-dev      public    Express API (only ever called through the dashboard's /api)
+#   bossbyte-worker-dev   internal  Bull worker, one always-on instance
+#
+# and one Cloud Run job, bossbyte-migrate-dev, that runs `node dist/migrate.js`.
+#
+# ─── One-time setup ────────────────────────────────────────────────────────────
+#
+# Google Cloud
+#   1. Enable the Cloud Run, Artifact Registry, Secret Manager and IAM Credentials APIs.
+#   2. Create a Docker repository in Artifact Registry (default name: bossbyte).
+#   3. Set up Workload Identity Federation for this repository and a deploy
+#      service account with: roles/run.admin, roles/artifactregistry.writer,
+#      roles/iam.serviceAccountUser (on the runtime service account) and
+#      roles/browser (to read the project number).
+#      https://github.com/google-github-actions/auth#setup
+#   4. Create a runtime service account with roles/secretmanager.secretAccessor,
+#      plus roles/storage.objectAdmin on the bucket and
+#      roles/iam.serviceAccountTokenCreator on itself (for signed download URLs).
+#   5. Create these secrets in Secret Manager:
+#        bossbyte-dev-database-url          postgres://user:password@host:5432/bossbyte
+#        bossbyte-dev-redis-url             redis://host:6379
+#        bossbyte-dev-jwt-private-key       base64 of the RS256 private key PEM
+#        bossbyte-dev-jwt-public-key        base64 of the RS256 public key PEM
+#        bossbyte-dev-csrf-secret           at least 32 random characters
+#        bossbyte-dev-data-encryption-key   base64 of 32 random bytes
+#        bossbyte-dev-blind-index-key       base64 of 32 random bytes
+#      (`npm run setup` generates suitable values locally; do not reuse your
+#      local ones. `base64 < apps/api/keys/jwt-private.pem | tr -d '\n'`.)
+#
+# GitHub → Settings → Secrets and variables → Actions → Variables
+#   Required
+#     GCP_PROJECT_ID                    e.g. my-project
+#     GCP_REGION                        e.g. asia-southeast1
+#     GCP_WORKLOAD_IDENTITY_PROVIDER    projects/123/locations/global/workloadIdentityPools/…/providers/…
+#     GCP_DEPLOY_SERVICE_ACCOUNT        deployer@my-project.iam.gserviceaccount.com
+#     DEV_RUNTIME_SERVICE_ACCOUNT       bossbyte-dev@my-project.iam.gserviceaccount.com
+#     DEV_GCS_BUCKET                    bucket for uploaded files
+#   Optional
+#     GAR_REPOSITORY                    Artifact Registry repository (default: bossbyte)
+#     DEV_APP_URL                       public dashboard URL, if it has a custom domain
+#     DEV_TRUST_PROXY                   proxies in front of the API (default: 3, see below)
+#     DEV_VPC_NETWORK, DEV_VPC_SUBNET   Direct VPC egress, to reach Memorystore or a private Cloud SQL IP
+#     DEV_CLOUDSQL_INSTANCE             project:region:instance, to mount the Cloud SQL socket
+#     DEV_EXTRA_ENV_VARS                more API settings, KEY=value,KEY=value (e.g. SMTP_HOST=…,SMTP_PORT=587)
+#     DEV_EXTRA_SECRETS                 more secrets, ENV_NAME=secret-name:latest,… (e.g. SMTP_PASSWORD=…)
+#     DEV_VITE_FIREBASE_API_KEY, DEV_VITE_FIREBASE_AUTH_DOMAIN,
+#     DEV_VITE_FIREBASE_PROJECT_ID, DEV_VITE_FIREBASE_APP_ID    enable Google sign-in in the dashboard
+#
+# Notes
+#   - Open the dashboard at the URL printed in the run summary. Cloud Run also
+#     serves each service on a second, hash-based URL; the API only accepts
+#     browser requests whose origin is APP_URL.
+#   - TRUST_PROXY tells Express how many proxy hops to skip when reading the
+#     client IP (rate limiting, audit log). Through the dashboard there are
+#     three: Google's front end, Nginx, and Google's front end again. Check
+#     the IP in the audit log after the first deploy and adjust if it is wrong.
+#   - The worker runs as a service with CPU always allocated because Bull needs
+#     a long-lived Redis connection. Cloud Run worker pools are the alternative:
+#     deploy the same image and command without WORKER_HEALTH_PORT.
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-dev
+  # Never cancel a deploy half-way through a migration.
+  cancel-in-progress: false
+
+env:
+  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  REGION: ${{ vars.GCP_REGION }}
+  REGISTRY: ${{ vars.GCP_REGION }}-docker.pkg.dev
+  IMAGE_PREFIX: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY || 'bossbyte' }}
+  API_SERVICE: bossbyte-api-dev
+  WORKER_SERVICE: bossbyte-worker-dev
+  CORE_SERVICE: bossbyte-core-dev
+  MIGRATE_JOB: bossbyte-migrate-dev
+
+jobs:
+  build:
+    name: Build ${{ matrix.app }} image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      matrix:
+        app: [api, core]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: Authenticate Docker to Artifact Registry
+        run: gcloud auth configure-docker "$REGISTRY" --quiet
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/${{ matrix.app }}.Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}/${{ matrix.app }}:${{ github.sha }}
+            ${{ env.IMAGE_PREFIX }}/${{ matrix.app }}:dev
+          # Only the dashboard image reads these; the API build ignores them.
+          build-args: |
+            VITE_API_URL=/api/v1
+            VITE_FIREBASE_API_KEY=${{ vars.DEV_VITE_FIREBASE_API_KEY }}
+            VITE_FIREBASE_AUTH_DOMAIN=${{ vars.DEV_VITE_FIREBASE_AUTH_DOMAIN }}
+            VITE_FIREBASE_PROJECT_ID=${{ vars.DEV_VITE_FIREBASE_PROJECT_ID }}
+            VITE_FIREBASE_APP_ID=${{ vars.DEV_VITE_FIREBASE_APP_ID }}
+          cache-from: type=gha,scope=${{ matrix.app }}
+          cache-to: type=gha,scope=${{ matrix.app }},mode=max
+
+  deploy:
+    name: Migrate and deploy
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RUNTIME_SERVICE_ACCOUNT: ${{ vars.DEV_RUNTIME_SERVICE_ACCOUNT }}
+      APP_URL_OVERRIDE: ${{ vars.DEV_APP_URL }}
+      TRUST_PROXY: ${{ vars.DEV_TRUST_PROXY || '3' }}
+      GCS_BUCKET: ${{ vars.DEV_GCS_BUCKET }}
+      VPC_NETWORK: ${{ vars.DEV_VPC_NETWORK }}
+      VPC_SUBNET: ${{ vars.DEV_VPC_SUBNET }}
+      CLOUDSQL_INSTANCE: ${{ vars.DEV_CLOUDSQL_INSTANCE }}
+      EXTRA_ENV_VARS: ${{ vars.DEV_EXTRA_ENV_VARS }}
+      EXTRA_SECRETS: ${{ vars.DEV_EXTRA_SECRETS }}
+    steps:
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: Work out URLs and shared settings
+        run: |
+          set -euo pipefail
+
+          for name in PROJECT_ID REGION RUNTIME_SERVICE_ACCOUNT GCS_BUCKET; do
+            if [ -z "${!name}" ]; then
+              echo "::error::The repository variable behind $name is not set. See the top of deploy-dev.yml."
+              exit 1
+            fi
+          done
+
+          # Cloud Run's deterministic URLs are known before the services exist,
+          # which lets the API and the dashboard be configured with each other's address.
+          project_number="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
+          api_url="https://${API_SERVICE}-${project_number}.${REGION}.run.app"
+          app_url="${APP_URL_OVERRIDE:-https://${CORE_SERVICE}-${project_number}.${REGION}.run.app}"
+          app_host="${app_url#https://}"
+          app_host="${app_host%%/*}"
+
+          env_vars="NODE_ENV=production,LOG_LEVEL=info,APP_URL=${app_url},WEBAUTHN_RP_ID=${app_host}"
+          env_vars="${env_vars},TRUST_PROXY=${TRUST_PROXY},STORAGE_DRIVER=gcs,GCS_BUCKET=${GCS_BUCKET},GCS_PROJECT_ID=${PROJECT_ID}"
+          if [ -n "$EXTRA_ENV_VARS" ]; then env_vars="${env_vars},${EXTRA_ENV_VARS}"; fi
+
+          secrets="DATABASE_URL=bossbyte-dev-database-url:latest"
+          secrets="${secrets},REDIS_URL=bossbyte-dev-redis-url:latest"
+          secrets="${secrets},JWT_PRIVATE_KEY=bossbyte-dev-jwt-private-key:latest"
+          secrets="${secrets},JWT_PUBLIC_KEY=bossbyte-dev-jwt-public-key:latest"
+          secrets="${secrets},CSRF_SECRET=bossbyte-dev-csrf-secret:latest"
+          secrets="${secrets},DATA_ENCRYPTION_KEY=bossbyte-dev-data-encryption-key:latest"
+          secrets="${secrets},BLIND_INDEX_KEY=bossbyte-dev-blind-index-key:latest"
+          if [ -n "$EXTRA_SECRETS" ]; then secrets="${secrets},${EXTRA_SECRETS}"; fi
+
+          # Flags shared by the job and the API and worker services. None of
+          # the values contain spaces, so the string is safe to word-split.
+          common="--project=${PROJECT_ID} --region=${REGION} --service-account=${RUNTIME_SERVICE_ACCOUNT}"
+          if [ -n "$VPC_NETWORK" ]; then
+            common="${common} --network=${VPC_NETWORK} --subnet=${VPC_SUBNET:-$VPC_NETWORK} --vpc-egress=private-ranges-only"
+          fi
+          if [ -n "$CLOUDSQL_INSTANCE" ]; then
+            common="${common} --set-cloudsql-instances=${CLOUDSQL_INSTANCE}"
+          fi
+
+          {
+            echo "API_URL=${api_url}"
+            echo "APP_URL=${app_url}"
+            echo "API_IMAGE=${IMAGE_PREFIX}/api:${GITHUB_SHA}"
+            echo "CORE_IMAGE=${IMAGE_PREFIX}/core:${GITHUB_SHA}"
+            echo "RUNTIME_ENV_VARS=${env_vars}"
+            echo "RUNTIME_SECRETS=${secrets}"
+            echo "COMMON_FLAGS=${common}"
+          } >> "$GITHUB_ENV"
+
+      # The job gets the same configuration as the API, because the migration
+      # script validates the whole environment before it connects.
+      - name: Apply database migrations
+        run: |
+          # shellcheck disable=SC2086
+          gcloud run jobs deploy "$MIGRATE_JOB" $COMMON_FLAGS \
+            --image="$API_IMAGE" \
+            --command=node --args=dist/migrate.js \
+            --set-env-vars="$RUNTIME_ENV_VARS" \
+            --set-secrets="$RUNTIME_SECRETS" \
+            --max-retries=0 --task-timeout=10m \
+            --execute-now --wait --quiet
+
+      - name: Deploy the API
+        run: |
+          # shellcheck disable=SC2086
+          gcloud run deploy "$API_SERVICE" $COMMON_FLAGS \
+            --image="$API_IMAGE" \
+            --set-env-vars="$RUNTIME_ENV_VARS" \
+            --set-secrets="$RUNTIME_SECRETS" \
+            --allow-unauthenticated --ingress=all \
+            --cpu=1 --memory=512Mi --min-instances=0 --max-instances=3 \
+            --quiet
+
+      - name: Deploy the worker
+        run: |
+          # shellcheck disable=SC2086
+          gcloud run deploy "$WORKER_SERVICE" $COMMON_FLAGS \
+            --image="$API_IMAGE" \
+            --command=node --args=dist/worker.js \
+            --set-env-vars="${RUNTIME_ENV_VARS},WORKER_HEALTH_PORT=8080" \
+            --set-secrets="$RUNTIME_SECRETS" \
+            --port=8080 --no-allow-unauthenticated --ingress=internal \
+            --cpu=1 --memory=512Mi --min-instances=1 --max-instances=1 --no-cpu-throttling \
+            --quiet
+
+      - name: Deploy the dashboard
+        run: |
+          gcloud run deploy "$CORE_SERVICE" \
+            --project="$PROJECT_ID" --region="$REGION" \
+            --image="$CORE_IMAGE" \
+            --set-env-vars="API_UPSTREAM=${API_URL}" \
+            --port=8080 --allow-unauthenticated --ingress=all \
+            --cpu=1 --memory=256Mi --min-instances=0 --max-instances=3 \
+            --quiet
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          core_url="$(gcloud run services describe "$CORE_SERVICE" --project="$PROJECT_ID" --region="$REGION" --format='value(status.url)')"
+          retry=(--fail --silent --show-error --retry 5 --retry-delay 5 --retry-all-errors)
+          curl "${retry[@]}" "${core_url}/healthz"
+          # The API's readiness probe checks its database, Redis and storage bucket.
+          # A bucket it cannot reach is reported as "degraded" with a 200, hence the grep.
+          curl "${retry[@]}" "${API_URL}/health/ready" | tee /dev/stderr | grep --quiet '"status":"ok"'
+          # Through Nginx to the API.
+          curl "${retry[@]}" --output /dev/null "${core_url}/api/openapi.json"
+          {
+            echo "### Deployed \`${GITHUB_SHA::7}\` to dev"
+            echo ""
+            echo "- Dashboard: ${APP_URL}"
+            echo "- API: ${API_URL}"
+          } >> "$GITHUB_STEP_SUMMARY"

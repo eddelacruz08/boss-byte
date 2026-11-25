@@ -1,0 +1,28 @@
+name: Set up Node.js and install dependencies
+description: >
+  Installs the Node.js version pinned in .nvmrc and the npm version pinned in
+  package.json ("packageManager"), then runs `npm ci` with the npm cache restored.
+
+inputs:
+  install:
+    description: Set to "false" to skip `npm ci` (for jobs that only need the lockfile).
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v7
+      with:
+        node-version-file: .nvmrc
+        cache: npm
+
+    # The npm bundled with Node.js can lag behind the version the lockfile and
+    # the `allowScripts` policy in package.json were written for.
+    - name: Use the pinned npm version
+      shell: bash
+      run: npm install --global "$(node -p "require('./package.json').packageManager")"
+
+    - name: Install dependencies
+      if: inputs.install == 'true'
+      shell: bash
+      run: npm ci

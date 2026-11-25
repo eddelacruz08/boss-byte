@@ -1,0 +1,38 @@
+# Everything here is kept out of the Docker build context: it keeps builds fast
+# and, more importantly, keeps secrets out of image layers.
+
+# version control and CI
+.git
+.github
+
+# dependencies and build output (rebuilt inside the image)
+**/node_modules
+**/dist
+**/coverage
+**/.turbo
+**/*.tsbuildinfo
+apps/docs/.vitepress/cache
+apps/docs/.vitepress/dist
+
+# environment files and secrets
+**/.env
+**/.env.*
+!**/.env.example
+apps/api/keys
+**/*.pem
+**/service-account*.json
+
+# test artefacts
+playwright-report
+test-results
+blob-report
+e2e
+
+# local tooling
+docker-compose*.yml
+docker/postgres
+ecosystem.config.cjs
+.vscode
+.idea
+**/.DS_Store
+**/*.log

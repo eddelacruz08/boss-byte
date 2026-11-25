@@ -1,0 +1,50 @@
+{
+  "name": "@bossbyte/ui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "BossByte UI — the in-house React component library (Headless UI, TipTap, Framer Motion, react-datepicker, dayjs).",
+  "type": "module",
+  "sideEffects": [
+    "**/*.css"
+  ],
+  "exports": {
+    ".": "./src/index.ts",
+    "./styles.css": "./src/styles.css"
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "clean": "rm -rf .turbo coverage"
+  },
+  "dependencies": {
+    "@headlessui/react": "^2.2.10",
+    "@tiptap/pm": "^3.35.0",
+    "@tiptap/react": "^3.35.0",
+    "@tiptap/starter-kit": "^3.35.0",
+    "clsx": "^2.1.1",
+    "dayjs": "^1.11.23",
+    "framer-motion": "^14.14.0",
+    "react-datepicker": "^9.1.0",
+    "tailwind-merge": "^3.7.1"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tailwindcss": "^4.0.0"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.13",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "jsdom": "^31.0.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "tailwindcss": "^4.3.5",
+    "vitest": "^4.1.12",
+    "vitest-axe": "^0.1.0"
+  }
+}

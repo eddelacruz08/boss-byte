@@ -1,0 +1,12 @@
+node_modules
+dist
+coverage
+.turbo
+package-lock.json
+playwright-report
+test-results
+apps/docs/.vitepress/cache
+apps/docs/.vitepress/dist
+apps/core/src/routeTree.gen.ts
+apps/api/migrations
+CHANGELOG.md

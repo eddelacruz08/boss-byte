@@ -1,0 +1,25 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "ignoreExportsUsedInFile": true,
+  "workspaces": {
+    ".": {
+      "entry": ["ecosystem.config.cjs", "scripts/*.mjs"]
+    },
+    "apps/api": {
+      "entry": [
+        "src/{server,worker}.ts",
+        "src/db/{migrate,seed,rotate-keys}.ts",
+        "src/lib/{documents,valuation}/index.ts"
+      ],
+      "project": ["src/**/*.ts", "tests/**/*.ts"],
+      "ignoreDependencies": ["pino-pretty"]
+    },
+    "apps/core": {
+      "entry": ["src/routes/**/*.tsx"],
+      "project": ["src/**/*.{ts,tsx,css}"]
+    },
+    "packages/ui": {
+      "ignoreDependencies": ["tailwindcss"]
+    }
+  }
+}

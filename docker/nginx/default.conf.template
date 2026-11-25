@@ -1,0 +1,103 @@
+# BossByte dashboard. The official Nginx image renders this file with envsubst
+# at start-up: ${PORT}, ${API_UPSTREAM}, ${CONTENT_SECURITY_POLICY} and
+# ${NGINX_LOCAL_RESOLVERS} are replaced; Nginx's own $variables are left alone.
+
+# TLS is terminated in front of this container (Cloud Run, a load balancer), so
+# trust the proxy's word on the original scheme and fall back to our own.
+map $http_x_forwarded_proto $forwarded_proto {
+  default $http_x_forwarded_proto;
+  ""      $scheme;
+}
+
+map $forwarded_proto $hsts_header {
+  https   "max-age=31536000; includeSubDomains";
+  default "";
+}
+
+map "" $content_security_policy {
+  default "${CONTENT_SECURITY_POLICY}";
+}
+
+server {
+  listen ${PORT};
+  server_name _;
+
+  root /usr/share/nginx/html;
+  index index.html;
+
+  server_tokens off;
+  absolute_redirect off;
+  charset utf-8;
+
+  gzip on;
+  gzip_comp_level 5;
+  gzip_min_length 1024;
+  gzip_proxied any;
+  gzip_vary on;
+  gzip_types
+    text/plain
+    text/css
+    text/javascript
+    application/javascript
+    application/json
+    application/manifest+json
+    application/xml
+    image/svg+xml
+    font/ttf
+    font/otf;
+
+  # Liveness probe for Docker, Cloud Run and load balancers.
+  location = /healthz {
+    access_log off;
+    default_type text/plain;
+    return 200 "ok\n";
+  }
+
+  # The API, on the same origin as the dashboard: no CORS, and the refresh
+  # cookie stays first-party. The API sets its own security headers (helmet).
+  location /api/ {
+    # Resolving through a variable makes Nginx look the upstream up at request
+    # time, so it starts even when the API is not reachable yet and follows
+    # DNS changes afterwards.
+    resolver ${NGINX_LOCAL_RESOLVERS} valid=30s;
+    set $api_upstream ${API_UPSTREAM};
+    proxy_pass $api_upstream;
+
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    # Cloud Run routes on the Host header, so it must name the upstream.
+    proxy_set_header Host $proxy_host;
+    proxy_ssl_server_name on;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Proto $forwarded_proto;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+    # A little above the API's 10 MB upload limit, so the API's own error is what users see.
+    client_max_body_size 12m;
+    proxy_connect_timeout 5s;
+    proxy_read_timeout 60s;
+    proxy_send_timeout 60s;
+  }
+
+  # Vite fingerprints everything under /assets/, so it can be cached forever.
+  location /assets/ {
+    access_log off;
+    try_files $uri =404;
+    add_header Cache-Control "public, max-age=31536000, immutable" always;
+    include /etc/nginx/snippets/security-headers.conf;
+  }
+
+  # The entry document must always be revalidated, or a deploy would leave
+  # browsers pointing at asset files that no longer exist.
+  location = /index.html {
+    add_header Cache-Control "no-cache" always;
+    include /etc/nginx/snippets/security-headers.conf;
+  }
+
+  # Client-side routing: any path that is not a file is the single-page app.
+  location / {
+    try_files $uri $uri/ /index.html;
+    add_header Cache-Control "public, max-age=3600" always;
+    include /etc/nginx/snippets/security-headers.conf;
+  }
+}
